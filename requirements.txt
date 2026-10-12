@@ -1,6 +1,6 @@
-# Canonical install: pip install -r requirements.txt (repo root) + requirements-gui.txt
-# Do not pip install this file alone. Listed here for reference / upstream parity.
-
+discord.py>=2.3.0
+fastapi
+uvicorn
 audible==0.8.2
 beautifulsoup4==4.12.2
 ffmpeg_python==0.2.0
@@ -12,6 +12,18 @@ pywidevine==1.8.0
 rsa==4.9
 tqdm==4.66.1
 xmltodict==0.13.0
-python-dateutil
-brotli
-# bs4: use beautifulsoup4 above (provides `from bs4 import BeautifulSoup`)
+```[cite: 8]
+
+#### 2. Script de Compilación `render-build.sh`
+Render corre sobre un sistema Linux puro donde se necesitan herramientas binarias externas (`ffmpeg` y `shaka-packager`) para procesar el audio[cite: 6]. Crea este archivo para descargarlas automáticamente:
+```bash
+#!/usr/bin/env bash
+set -o errexit
+
+# Instalar dependencias de Python
+pip install -r requirements.txt
+
+# Crear directorio bin y descargar binarios estáticos para Linux
+mkdir -p bin
+curl -L https://github.com/shaka-project/shaka-packager/releases/download/v3.2.0/packager-linux-x64 -o bin/packager-linux-x64
+chmod +x bin/packager-linux-x64
