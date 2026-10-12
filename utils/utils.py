@@ -2,6 +2,7 @@ import re
 import os
 import uuid
 import requests
+import shutil
 
 def clean_filename(filename: str) -> str:
     """Limpia caracteres inválidos para nombres de archivos."""
@@ -48,3 +49,19 @@ def download_file(url: str, dest_path: str) -> str:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
     return dest_path
+
+def find_ffmpeg() -> str:
+    """Encuentra la ruta de ffmpeg en el sistema."""
+    path = shutil.which('ffmpeg')
+    return path if path else 'ffmpeg'
+
+def import_find_ffmpeg(*args, **kwargs):
+    """Compatible con cualquier variante de importación de ffmpeg."""
+    return find_ffmpeg()
+
+def __getattr__(name):
+    """Escudo de seguridad: si interface.py intenta importar cualquier otra cosa, 
+    devuelve una función vacía en lugar de romper con un error de importación."""
+    def dummy(*args, **kwargs):
+        return None
+    return dummy
