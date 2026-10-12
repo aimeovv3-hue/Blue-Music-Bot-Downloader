@@ -24,3 +24,9 @@ class AmazonMusicDevice:
 class AmazonMusicMobileAPICredentials:
     def __init__(self, *args, **kwargs):
         pass
+        
+class QualityEnum(Enum):
+    STANDARD = "STANDARD"
+    HIFI = "HIFI"
+    LOSSLESS = "LOSSLESS"
+    ATMOS = "ATMOS"
