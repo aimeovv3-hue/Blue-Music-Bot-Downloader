@@ -37,7 +37,7 @@ from utils.utils import (
 )
 
 from modules.amazonmusic.models import AmazonContinent
-from .azapi import AmazonMusicMobileAPI, AmazonMusicMobileAPICredentials, AmazonMusicTier, AmazonRegion
+from azapi import AmazonMusicMobileAPI, AmazonMusicMobileAPICredentials, AmazonMusicTier, AmazonRegion
 
 LOGGER = logging.getLogger(__name__)
 
