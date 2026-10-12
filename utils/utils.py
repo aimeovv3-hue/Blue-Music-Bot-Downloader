@@ -1,5 +1,6 @@
 import re
 import os
+import uuid
 
 def clean_filename(filename: str) -> str:
     """Limpia caracteres inválidos para nombres de archivos."""
@@ -31,3 +32,7 @@ def ensure_dir(directory: str):
     """Se asegura de que el directorio exista, si no, lo crea."""
     if not os.path.exists(directory):
         os.makedirs(directory)
+
+def create_temp_filename(suffix: str = "") -> str:
+    """Genera un nombre de archivo temporal único."""
+    return f"{uuid.uuid4()}{suffix}"
