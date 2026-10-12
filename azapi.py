@@ -24,7 +24,7 @@ from audible.login import (
 )
 from Crypto.PublicKey import RSA
 
-from .models import AmazonMusicDevice, AmazonMusicMobileAPICredentials, AmazonMusicTier, AmazonRegion, AmazonContinent
+from models import AmazonMusicDevice, AmazonMusicMobileAPICredentials, AmazonMusicTier, AmazonRegion, AmazonContinent
 
 LOGGER = logging.getLogger(__name__)
 
