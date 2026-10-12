@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 import concurrent.futures
 import threading
 from urllib.parse import urlparse, parse_qs
+from enum import IntEnum
 
 import ffmpeg
 import natsort
@@ -38,6 +39,15 @@ from utils.utils import (
 
 from modules.amazonmusic.models import AmazonContinent
 from azapi import AmazonMusicMobileAPI, AmazonMusicMobileAPICredentials, AmazonMusicTier, AmazonRegion
+
+class QualityEnum(IntEnum):
+    MINIMUM = 1
+    LOW = 2
+    MEDIUM = 3
+    HIGH = 4
+    LOSSLESS = 5
+    HIFI = 6
+    ATMOS = 7
 
 LOGGER = logging.getLogger(__name__)
 
@@ -104,7 +114,6 @@ class PSSHEntitlements:
                 yield field.name, item
 
     def _get_entitlements_group_id(self):
-        # me when the method i want to use is literally a pain to implement:
         for _name, entitlement in self.iterate():
             pssh = WidevinePsshData()
             pssh.ParseFromString(entitlement.init_data)
@@ -143,20 +152,12 @@ class AudioTrack:
     bit_depth: Optional[int] = None
 
 
-# This is a Amazon Music module for OrpheusDL, requires an active account (optionally requires a active paid subscription)
-
-module_information = ModuleInformation(  # Only service_name and module_supported_modes are mandatory
+module_information = ModuleInformation(
     service_name="Amazon Music",
     module_supported_modes=ModuleModes.download
     | ModuleModes.lyrics
     | ModuleModes.covers
     | ModuleModes.credits,
-    # flags = ModuleFlags.hidden,
-    # Flags:
-    # startup_load: load module on startup
-    # hidden: hides module from CLI help options
-    # jwt_system_enable: handles bearer and refresh tokens automatically, though currently untested
-    # private: override any public modules, only enabled with the -p/--private argument, currently broken
     global_settings={
         "wvd_path": "",
         "force_non_spatial": False,
@@ -164,7 +165,7 @@ module_information = ModuleInformation(  # Only service_name and module_supporte
         "prefer_spatial_ac4": False,
         "prefer_aria2c": False,
         "prefer_removal_of_device_when_revoked": True,
-        "prefer_account_continent": "NA", # or FE (Asia) or EU (Europe)
+        "prefer_account_continent": "NA",
         "trim_track_by_sample_rate": True,
         "max_track_quality_to_use": "",
         "quality_format": "{sample_rate}kHz/{bit_depth}bit",
@@ -183,13 +184,12 @@ module_information = ModuleInformation(  # Only service_name and module_supporte
     session_storage_variables=["credentials"],
     netlocation_constant="amazon",
     test_url="https://music.amazon.com/albums/B08TZPYLJN",
-    login_behaviour=ManualEnum.manual,  # setting to ManualEnum.manual disables Orpheus automatically calling login() when needed
+    login_behaviour=ManualEnum.manual,
     url_decoding=ManualEnum.manual,
 )
 
 
 def validate_amazonmusic_setup(settings: dict, session_storage_path: str, *, gui_mode: bool = False) -> None:
-    """Raise AmazonMusicConfigError when required setup is missing (before module init)."""
     if not isinstance(settings, dict):
         settings = {}
 
@@ -233,7 +233,6 @@ class ModuleInterface:
         self._quality_notice_lock = threading.Lock()
         self._preview_audio_cache: dict[str, str] = {}
 
-        # Items highest are iterated first
         self.quality_parse = {
             QualityEnum.MINIMUM: [
                 "LD",
@@ -251,7 +250,6 @@ class ModuleInterface:
                 "HD",
             ],
             QualityEnum.HIFI: ["UHD"],
-            # Spatial tiers are only used when download quality is Atmos (or max_track_quality is spatial).
             QualityEnum.ATMOS: [
                 "SPATIAL_RA360",
                 "SPATIAL_ATMOS",
@@ -276,7 +274,7 @@ class ModuleInterface:
 
     def login_onto_mobile(
         self, email: str, password: str
-    ):  # Called automatically by Orpheus when standard_login is flagged, otherwise optional
+    ):
         country = str(self.settings.get("country") or "").strip()
         if not country:
             raise AmazonMusicConfigError(
@@ -295,7 +293,6 @@ class ModuleInterface:
             oauth_flow_callback=oauth_flow,
         )
         if not isinstance(mobile_session, AmazonMusicMobileAPI):
-            # die
             raise TypeError("Login failed")
 
         LOGGER.debug(mobile_session.retrieve_capability())
@@ -305,7 +302,6 @@ class ModuleInterface:
 
     def update_cached_credentials(self, credentials: AmazonMusicMobileAPICredentials, remove_arg_credentials: typing.Optional[bool] = False):
         cached_creds = self.tsc.read("credentials") or {}
-        # Add support for previous versions of this module
         if isinstance(cached_creds, dict) and AmazonMusicMobileAPICredentials.is_dict_of_instance(cached_creds):
             cached_creds = {
                 cached_creds["web_client_config"]["music_territory"]: cached_creds
@@ -324,7 +320,6 @@ class ModuleInterface:
                 credentials.account_region.country:
                 credentials.to_dict()
             }
-        # Save credentials to loginstorage.bin
         try:
             self.tsc.set("credentials", final_creds)
         except Exception:
@@ -333,7 +328,6 @@ class ModuleInterface:
 
     @staticmethod
     def has_cached_credentials(session_storage_path: str) -> bool:
-        """True when loginstorage.bin has a parseable Amazon Music session (logged in)."""
         cached_creds = (
             read_temporary_setting(
                 session_storage_path, "amazonmusic", "custom_data", "credentials"
@@ -451,11 +445,9 @@ class ModuleInterface:
 
     @functools.lru_cache
     def select_session(self, selected_region: AmazonRegion):
-        # select by country
         session = self.load_cached_mobile_session(selected_region, use_exact_region=True)
 
         if not session:
-            # select by continent (NA, EU, FE)
             continents = [selected_region.region] + [item for item in AmazonContinent if selected_region.region != item]
             for continent in continents:
                 new_region = self.select_usable_region_from_regions(AmazonRegion.get_available_regions_by_continent(continent.name))
@@ -516,7 +508,6 @@ class ModuleInterface:
 
         components = [item.strip("\\") for item in url.path.split("/") if item]
 
-        # use the same logic as orpheusdl cuz lazy
         url_constants = {
             "tracks": DownloadTypeEnum.track,
             "albums": DownloadTypeEnum.album,
@@ -535,7 +526,7 @@ class ModuleInterface:
             media_id = (
                 components[1]
                 if type_matches[-1] is DownloadTypeEnum.artist
-                else components[2]  # my/playlists/uuid
+                else components[2]
             )
         else:
             media_id = components[-1]
@@ -547,7 +538,6 @@ class ModuleInterface:
         )
 
     def _cached_or_fetch(self, data: dict, key: str, fetch: typing.Callable[[], typing.Any]):
-        """Value from the orpheus data cache when present, else evaluate fetch()."""
         if data and key in data:
             return data[key]
         return fetch()
@@ -563,7 +553,6 @@ class ModuleInterface:
 
     @staticmethod
     def _valid_album_asins(album_data: dict, album_id: str, include_tracks: bool = False) -> list[str]:
-        """Every ASIN that can identify the album (API may answer with a substituted one)."""
         asins = [album_id]
         for key in ("requestedAsin", "globalAsin"):
             if asin := album_data.get(key):
@@ -582,7 +571,6 @@ class ModuleInterface:
         cover_options: CoverOptions,
         search_data: typing.Optional[dict] = None,
     ):
-        """Hi-res cover (formatted for cover_options) via text search, else the default 600x600 art."""
         cover_url, search_data = self.get_hi_res_cover(
             asins=asins,
             query=query,
@@ -591,7 +579,6 @@ class ModuleInterface:
             media_region=media_region,
         )
         if not cover_url:
-            # Default 600 x 600 cover art
             cover_url = str(album_data.get("image", ""))
         else:
             cover_url = self.format_cover_url(cover_url, cover_options)
@@ -604,7 +591,7 @@ class ModuleInterface:
         codec_options: CodecOptions,
         media_region: AmazonRegion,
         data: dict = {},
-    ) -> TrackInfo:  # Mandatory
+    ) -> TrackInfo:
         mobile_session, _ = self.select_session(media_region)
 
         if (
@@ -657,8 +644,6 @@ class ModuleInterface:
             )
             album_id = str(album_data["asin"])
 
-            # NOTE: I *could* use catalog_track AND catalog album
-            # but I prefer to limit the amount of API Requests per track
             search_data = self._cached_or_fetch(
                 data, f"{album_id}_search",
                 lambda: mobile_session.search(
@@ -677,11 +662,6 @@ class ModuleInterface:
 
             artists: list[str] = []
             contributor_asins = tuple(track_data["artist"]["contributorAsins"])
-            # Most of the time there are more than one version of the main artist
-            # e.g the main artist with all the albums is track_data["artist"]["asin"]
-            # meanwhile there exists a alternative version of the same artist inside (no albums)
-            # track_data["artist"]["contributorAsins"] (usually only one item)
-            # e.g https://music.amazon.co.jp/albums/B08P688B62
             if len(contributor_asins) > 1:
                 artists.extend(
                     str(item.get("name"))
@@ -691,18 +671,14 @@ class ModuleInterface:
                     if item.get("name")
                 )
             else:
-                # Fallback, include the formatted artist name (might include contributors)
                 artists.append(track_data["artist"]["name"])
 
-            # Assumes the primaryArtistName is one single individual name, not concanated
             primary_artist_name = album_data.get("primaryArtistName", "")
-            # Attempt to seperate each contributor if they're concatenated
             for artist in artists.copy():
                 if sep_artists := self.parse_credit_names_from_name(artist):
                     if artist in artists:
                         artists.remove(artist)
                     for new_art in sep_artists:
-                        # Fails here when an artist thats split isn't supposed to be split
                         if not primary_artist_name or (
                             new_art != primary_artist_name
                             and (
@@ -716,15 +692,10 @@ class ModuleInterface:
             if primary_artist_name in artists:
                 artists.remove(primary_artist_name)
 
-            # Remove duplicates
             artists = natsort.natsorted(set(artists))
-
-            # Prefer to have the primary artist name at the start
             artists.insert(0, primary_artist_name)
 
-            # Calculate the total disc avaliable by iterating each track and using the highest value
             disc_total = max(int(t["discNum"]) for t in album_data.get("tracks", [{}]))
-            # Sanitize writers
             writers = [str(item).strip() for item in track_data.get("songWriters", []) if item]
 
             for name in writers.copy():
@@ -734,12 +705,11 @@ class ModuleInterface:
                     writers.extend(names)
 
             composers = natsort.natsorted(set(writers))
-
             composers = "; ".join(composers)
 
             url = f"https://music.amazon.{media_region.domain_tld}/albums/{album_id}?trackAsin={track_id}&musicTerritory={media_region.country}"
             extra_tags = {
-                "Composer": composers,  # force set the composer tag, because orpheus doesn't handle it
+                "Composer": composers,
                 "WWW": url,
             }
 
@@ -749,25 +719,19 @@ class ModuleInterface:
                 extra_tags.update(
                     {
                         "Merchant": " ".join(
-                            str(
-                                merchant_name
-                            ).split()  # Remove whitespaces, if any (e.g Amazon Music USA)
+                            str(merchant_name).split()
                         )
                     }
                 )
             if track_to_use.reference_loudness:
                 extra_tags.update(
                     {
-                        "REPLAYGAIN_REFERENCE_LOUDNESS": track_to_use.reference_loudness  # ref. https://wiki.hydrogenaud.io/index.php?title=ReplayGain_2.0_specification
+                        "REPLAYGAIN_REFERENCE_LOUDNESS": track_to_use.reference_loudness
                     }
                 )
 
             product_details = album_data.get("productDetails") or {}
 
-            # sanitize and format the genre name from search data
-            # this genre tends to be more specific however,
-            # it may not be always avaliable
-            # e.g https://music.amazon.co.jp/albums/B09JNRPVHN?trackAsin=B09JNRQQ3P
             genres = sorted(
                 list(
                     item
@@ -786,19 +750,13 @@ class ModuleInterface:
                 composer=composers,
                 copyright=product_details.get("copyright"),
                 isrc=track_data.get("isrc"),
-                # upc="",
                 disc_number=int(track_data["discNum"] or 1),
                 total_discs=disc_total,
-                track_number=int(track_data["trackNum"] or 1),  # None/0/1 if no discs
-                total_tracks=int(album_data["trackCount"] or 1),  # None/0/1 if no discs
-                # replay_gain=0.0,
-                # replay_peak=0.0,
+                track_number=int(track_data["trackNum"] or 1),
+                total_tracks=int(album_data["trackCount"] or 1),
                 genres=genres,
                 label=product_details.get("label"),
-                release_date=release_datetime.strftime(
-                    "%Y-%m-%d"
-                ),  # Format: YYYY-MM-DD
-                # comment=comment,
+                release_date=release_datetime.strftime("%Y-%m-%d"),
                 extra_tags=extra_tags,
             )
 
@@ -819,34 +777,29 @@ class ModuleInterface:
                 artists=artists,
                 tags=tags,
                 codec=track_to_use.codec,
-                cover_url=cover_url,  # make sure to check module_controller.orpheus_options.default_cover_options
+                cover_url=cover_url,
                 release_year=int(release_datetime.strftime("%Y")),
                 explicit=track_data["parentalControls"]["hasExplicitLanguage"],
-                artist_id=track_data.get("artist", {}).get("asin", ""),  # optional
+                artist_id=track_data.get("artist", {}).get("asin", ""),
                 id=str(track_id),
                 duration=track_data["duration"],
-                # animated_cover_url="",  # optional
-                # description="",  # optional
-                bit_depth=track_to_use.bit_depth,  # optional
-                sample_rate=track_to_use.sample_rate,  # optional
-                bitrate=track_to_use.bitrate,  # optional
+                bit_depth=track_to_use.bit_depth,
+                sample_rate=track_to_use.sample_rate,
+                bitrate=track_to_use.bitrate,
                 download_extra_kwargs={
                     "audio_track": track_to_use,
                     "media_region": media_region,
-                },  # optional only if download_type isn't DownloadEnum.TEMP_FILE_PATH, whatever you want
+                },
                 cover_extra_kwargs={
                     "media_region": media_region
-                    # "data": {track_id: ""}
-                },  # optional, whatever you want, but be very careful
+                },
                 credits_extra_kwargs={
                     "media_region": media_region
-                    # "data": {track_id: ""}
-                },  # optional, whatever you want, but be very careful
+                },
                 lyrics_extra_kwargs={
                     "media_region": media_region
-                    # "data": {track_id: ""}
-                },  # optional, whatever you want, but be very careful
-                error="",  # only use if there is an error
+                },
+                error="",
             )
         except Exception as e:
             LOGGER.error(e, exc_info=True)
@@ -859,7 +812,6 @@ class ModuleInterface:
             os.makedirs("temp/", exist_ok=True)
             encrypted_track_location = f"{create_temp_filename()}.mp4"
 
-            # OrpheusDL default downloader only (aria2c/aria2p not supported in this distribution)
             download_file(
                 audio_track.url,
                 encrypted_track_location,
@@ -867,7 +819,7 @@ class ModuleInterface:
                 indent_level=getattr(self.module_controller.printer_controller, "indent_number", 0),
             )
 
-            decrypted_track_location = f"{create_temp_filename()}.mp4"  # {codec_data[audio_track.codec].container.name}
+            decrypted_track_location = f"{create_temp_filename()}.mp4"
             if audio_track.entitlements.music_territory and audio_track.entitlements.music_territory != media_region.country:
                 self.print(
                     f'{module_information.service_name}: Entitlements are '
@@ -904,7 +856,6 @@ class ModuleInterface:
                         label=audio_track.official_quality_name
                     )
 
-            # Interact with the license server
             if not os.path.exists(decrypted_track_location) and mobile_session.credentials.tier is not AmazonMusicTier.FREE:
                 session_id = self.cdm.open()
 
@@ -998,8 +949,6 @@ class ModuleInterface:
             if selected_codec_data.spatial:
                 spatial_output_location = decrypted_track_location
                 if audio_track.codec in (CodecEnum.EAC3, CodecEnum.AC4):
-                    # Dolby Atmos (EAC3/AC4): ffmpeg understands these, so remux
-                    # (stream copy) into the proper M4A container — mirrors Tidal.
                     spatial_output_location = (
                         f"{create_temp_filename()}.{selected_codec_data.container.name}"
                     )
@@ -1007,8 +956,6 @@ class ModuleInterface:
                         out_kwargs = {"acodec": "copy", "loglevel": "warning"}
                         if spatial_output_location.lower().endswith((".m4a", ".mp4")):
                             out_kwargs["movflags"] = "+faststart"
-                        # Use an ffmpeg that can encode Opus (prefer the app/bundled one,
-                        # falling back down PATH if it lacks Opus) rather than silently failing.
                         _pref2 = find_system_ffmpeg()[1]
                         _ff2_path = resolve_ffmpeg_with_opus(preferred=_pref2) or 'ffmpeg'
                         ffmpeg.input(decrypted_track_location).output(
@@ -1020,10 +967,6 @@ class ModuleInterface:
                             "FFmpeg remux of Atmos audio failed, using decrypted file as-is."
                         )
                         spatial_output_location = decrypted_track_location
-                # MHA1/MHM1 (Sony 360RA MPEG-H 3D Audio): ffmpeg has no muxer for
-                # these, so a remux is impossible AND unnecessary — the shaka-decrypted
-                # file is already a valid MP4 container. The downloader names it with
-                # the proper extension via different_codec (MHA1 -> .m4a, MHM1 -> .mp4).
                 return TrackDownloadInfo(
                     download_type=DownloadEnum.TEMP_FILE_PATH,
                     temp_file_path=spatial_output_location,
@@ -1034,15 +977,12 @@ class ModuleInterface:
             final_decrypted_track_location = (
                 f"{create_temp_filename()}.{selected_codec_data.container.name}"
             )
-            ffcmd: ffmpeg = ffmpeg.input(decrypted_track_location)  # type: ignore
+            ffcmd: ffmpeg = ffmpeg.input(decrypted_track_location)
             ffcmd_out_kwargs = {
                 "filename": final_decrypted_track_location,
                 "loglevel": "warning",
                 "audio_bitrate": f"{audio_track.bitrate}k",
             }
-            # Some ffmpeg builds mark the native 'opus' encoder experimental (its use
-            # aborts with "Default encoder for format opus ... is probably disabled").
-            # Force the stable libopus encoder explicitly when the output codec is OPUS.
             if audio_track.codec is CodecEnum.OPUS:
                 ffcmd_out_kwargs.update({"codec": "libopus"})
             if self.settings["trim_track_by_sample_rate"]:
@@ -1051,9 +991,6 @@ class ModuleInterface:
                 )
 
             ffcmd = ffcmd.output(**ffcmd_out_kwargs)
-            # Use an ffmpeg that can actually encode Opus: prefer the app/bundled
-            # ffmpeg.exe (find_system_ffmpeg), but if it lacks an Opus encoder, fall
-            # back to the next working ffmpeg on PATH so previews never fail silently.
             _pref = find_system_ffmpeg()[1]
             _ff_path = resolve_ffmpeg_with_opus(preferred=_pref) or 'ffmpeg'
             stdout, stderr = ffcmd.run(cmd=_ff_path)
@@ -1071,7 +1008,6 @@ class ModuleInterface:
         )
 
     def _preferred_account_region(self) -> AmazonRegion:
-        """A cached-login region from the preferred continent, else the first region of it."""
         continents = AmazonRegion.get_available_regions_by_continent(
             self.settings["prefer_account_continent"]
         )
@@ -1083,10 +1019,6 @@ class ModuleInterface:
         media_region: typing.Optional[AmazonRegion] = None,
         media_region_country: typing.Optional[str] = None,
     ) -> typing.Optional[str]:
-        """
-        Decrypt the full track at low quality for in-app search preview playback.
-        Returns a local temp file path (not an HTTP URL). Results are cached per session.
-        """
         if not track_id or not str(track_id).strip():
             return None
 
@@ -1174,7 +1106,6 @@ class ModuleInterface:
 
     @staticmethod
     def _amazon_spatial_display_label(codec_name: str = "", official_name: str = "") -> str:
-        """Canonical spatial labels for search UI (small-caps via gui._to_small_caps)."""
         combined = f"{official_name} {codec_name}".lower()
         if re.search(r"mpeg-h|mha1|mhm1|\bra360\b", combined) or re.search(
             r"\b360\b", combined
@@ -1212,7 +1143,6 @@ class ModuleInterface:
 
     @staticmethod
     def _quality_display_sort_key(label: str) -> tuple[int, float, int]:
-        """Sort key for picking the single best album-level quality label."""
         text = str(label or "").strip()
         low = text.lower()
         if re.search(r"opus\s+only", low):
@@ -1226,7 +1156,6 @@ class ModuleInterface:
 
     @staticmethod
     def _best_quality_display(displays: typing.Iterable[str]) -> str:
-        """Highest available quality only (e.g. 44.1kHz/24bit, not 16bit + OPUS)."""
         labels = [str(d).strip() for d in displays if d and str(d).strip()]
         if not labels:
             return ""
@@ -1236,7 +1165,6 @@ class ModuleInterface:
         self,
         mapped_audio_tracks: dict[QualityEnum, dict[str, list[AudioTrack]]],
     ) -> tuple[set[str], set[str]]:
-        """All distinct spatial and stereo tiers present in one MPD (for search badges)."""
         spatial_labels: set[str] = set()
         stereo_labels: set[str] = set()
         quality_format = str(self.settings.get("quality_format", ""))
@@ -1274,7 +1202,6 @@ class ModuleInterface:
         return spatial_labels, stereo_labels
 
     def _amazon_force_3d_for_manifest(self) -> bool:
-        """Match get_album_info / expand manifest requests (Atmos + UHD on same ASIN)."""
         return any(
             not self.settings.get("force_non_spatial", False)
             or self.settings.get(key)
@@ -1289,14 +1216,6 @@ class ModuleInterface:
         *,
         force_3d: bool,
     ) -> tuple[set[str], set[str], set[str], bool]:
-        """
-        Discover tiers in the manifest for the given force_3d mode.
-
-        Amazon's try3dAsinSubstitution (force_3d=True) exposes Atmos but often drops UHD;
-        force_3d=False is required for 192 kHz / stereo tiers (see azapi.get_tracks_manifest).
-
-        Returns (spatial_labels, stereo_labels, per_track_labels, has_ra360_manifest).
-        """
         spatial_labels: set[str] = set()
         stereo_labels: set[str] = set()
         per_track_labels: set[str] = set()
@@ -1329,7 +1248,6 @@ class ModuleInterface:
         spatial_labels: typing.Iterable[str],
         stereo_labels: typing.Iterable[str],
     ) -> list[str]:
-        """Build search Additional tokens: spatial first, then best non-spatial tier."""
         result: list[str] = []
         spatial_set = {str(label).strip() for label in spatial_labels if label and str(label).strip()}
         stereo_set = {
@@ -1339,7 +1257,6 @@ class ModuleInterface:
             and str(label).strip()
             and not self._is_spatial_quality_display(str(label), str(label))
         }
-        # Distinct spatial badges (Atmos and Sony 360RA are separate tiers).
         has_atmos = False
         has_ra360 = False
         for label in spatial_set:
@@ -1374,7 +1291,6 @@ class ModuleInterface:
 
     @staticmethod
     def _format_quality_display(quality_tags: dict, quality_format: str) -> str:
-        """Human-readable quality (Qobuz-style kHz/bit); Opus SD has no bit depth."""
         codec_name = str(quality_tags.get("codec_pretty_name") or "").strip().lower()
         official_name = str(quality_tags.get("official_quality_name") or "").strip()
         bit_depth = quality_tags.get("bit_depth")
@@ -1403,7 +1319,6 @@ class ModuleInterface:
             out = f"{official_name} {fmt['codec_pretty_name']}".strip()
         if re.search(r"\bopus\b", out, re.I) and re.search(r"none\s*bit|nonebit", out, re.I):
             return "OPUS only"
-        # Remove template artifacts like 'bit-48kHz' left when bit_depth is empty.
         return re.sub(
             r"\s*bit-?\s*\d+(?:\.\d+)?\s*khz\s*",
             "",
@@ -1413,7 +1328,6 @@ class ModuleInterface:
 
     @staticmethod
     def _quality_labels_from_entity(entity: dict) -> list[str]:
-        """HD / UHD / Atmos from catalog contentEncoding (may not match actual MPD codecs)."""
         if not isinstance(entity, dict):
             return []
         encoding_labels = {
@@ -1504,17 +1418,14 @@ class ModuleInterface:
 
     @staticmethod
     def _is_hi_res_lossless(sample_rate_khz: float, bit_depth: int) -> bool:
-        """Same rule as Apple Music / Qobuz search: hi-res only above 48 kHz at 24-bit+."""
         return float(sample_rate_khz) > 48.0 and int(bit_depth) >= 24
 
     @staticmethod
     def _is_amazon_uhd_lossless(sample_rate_khz: float, bit_depth: int) -> bool:
-        """Amazon Ultra HD is commonly 48 kHz / 24-bit (catalog + MPD UHD tier)."""
         return float(sample_rate_khz) >= 48.0 and int(bit_depth) >= 24
 
     @staticmethod
     def _amazon_manifest_label_for_display(label: str) -> str:
-        """MPD-derived label → ATMOS / kHz·bit / HI-RES / OPUS only (never catalog UHD flags)."""
         text = str(label or "").strip()
         if not text:
             return ""
@@ -1528,8 +1439,6 @@ class ModuleInterface:
         if m:
             try:
                 sr_khz, bit_depth = float(m.group(1)), int(m.group(2))
-                # Hi-res is anything at/above 48 kHz with 24-bit+ (Apple/Qobuz hi-res rule
-                # is strictly above 48 kHz; Amazon Ultra HD is commonly 48 kHz / 24-bit).
                 if sr_khz >= 48.0 and bit_depth >= 24:
                     return "🅷 HI-RES"
             except (TypeError, ValueError):
@@ -1538,7 +1447,6 @@ class ModuleInterface:
 
     @staticmethod
     def _amazon_catalog_quality_display_labels(tags: typing.Iterable[str]) -> list[str]:
-        """Fallback when manifest probe fails: never treat catalog UHD as HI-RES."""
         lower = [str(t).strip().lower() for t in tags if t]
         if not lower:
             return []
@@ -1589,7 +1497,6 @@ class ModuleInterface:
 
     @staticmethod
     def _catalog_quality_tags_from_entity_and_tracks(entity: dict) -> list[str]:
-        """Album/playlist encoding flags from the entity and each track row."""
         tags: list[str] = []
         seen: set[str] = set()
 
@@ -1608,7 +1515,6 @@ class ModuleInterface:
         for track in entity.get("tracks") or []:
             if isinstance(track, dict):
                 _add_from(track)
-                # Playlist tracks carry contentEncoding under a nested metadata dict.
                 track_meta = track.get("metadata")
                 if isinstance(track_meta, dict):
                     _add_from(track_meta)
@@ -1620,7 +1526,6 @@ class ModuleInterface:
         item: dict,
         catalog: typing.Optional[dict] = None,
     ) -> list[str]:
-        """When manifest probe found Atmos only, add catalog UHD/HD if present."""
         if not manifest_labels or not self._quality_labels_include_atmos(manifest_labels):
             return manifest_labels
         if self._manifest_labels_include_stereo(manifest_labels):
@@ -1640,7 +1545,6 @@ class ModuleInterface:
 
     @staticmethod
     def _catalog_atmos_display_label(entity: dict) -> typing.Optional[str]:
-        """Atmos badge from catalog contentEncoding when manifest probe missed spatial tiers."""
         if not isinstance(entity, dict):
             return None
         tags = ModuleInterface._quality_labels_from_entity(entity)
@@ -1656,7 +1560,6 @@ class ModuleInterface:
         album_catalog: dict,
         search_hit: typing.Optional[dict] = None,
     ) -> str:
-        """Album-level quality from catalog flags (matches search/discography Additional column)."""
         if not isinstance(album_catalog, dict):
             return ""
         catalog_tags = self._catalog_quality_tags_from_entity_and_tracks(album_catalog)
@@ -1675,7 +1578,6 @@ class ModuleInterface:
         track_asin: str,
         media_region: AmazonRegion,
     ) -> list[str]:
-        """One-track manifest probe for accurate track search Additional column."""
         if not track_asin:
             return []
         try:
@@ -1723,7 +1625,6 @@ class ModuleInterface:
         mobile_session, _ = self.select_session(media_region)
 
         cached = data.get(album_id) if data and album_id in data else None
-        # Text-search hits are not full albums (no tracks / nested artist); always fetch catalog album.
         if cached and isinstance(cached.get("tracks"), list) and cached["tracks"]:
             album_data = dict(cached)
         else:
@@ -1735,12 +1636,10 @@ class ModuleInterface:
                     region_to_use=media_region,
                 )
             )
-        # Force use the ASIN the API returns with
         album_id = album_data["asin"]
 
         valid_asins = self._valid_album_asins(album_data, album_id, include_tracks=True)
 
-        # Artist display name from album/track metadata or text-search hits.
         artist = album_data.get("artist")
         if isinstance(artist, dict) and artist.get("name"):
             artist_name = str(artist["name"])
@@ -1762,7 +1661,6 @@ class ModuleInterface:
             media_region=media_region
         )
         if not cover_url:
-            # Default 600 x 600 cover art
             cover_url = str(album_data.get("image", ""))
 
         tracks_cover_art = self.format_cover_url(
@@ -1829,13 +1727,12 @@ class ModuleInterface:
             release_year=int(self._get_date_from_metadata(album_data).strftime("%Y")),
             explicit=explicit,
             duration=album_data.get("duration"),
-            artist_id=album_data.get("artist", {}).get("asin"),  # optional
-            # booklet_url="",  # optional
-            cover_url=tracks_cover_art or cover_url,  # optional
-            cover_type=ImageFileTypeEnum.jpg,  # optional
-            all_track_cover_jpg_url=tracks_cover_art,  # technically optional, but HIGHLY recommended
-            animated_cover_url="",  # optional
-            description="",  # optional
+            artist_id=album_data.get("artist", {}).get("asin"),
+            cover_url=tracks_cover_art or cover_url,
+            cover_type=ImageFileTypeEnum.jpg,
+            all_track_cover_jpg_url=tracks_cover_art,
+            animated_cover_url="",
+            description="",
             quality=album_quality_summary
             or self._format_quality_display(
                 quality_tags, str(self.settings.get("quality_format", ""))
@@ -1844,17 +1741,15 @@ class ModuleInterface:
             track_extra_kwargs={
                 "data": track_extra_kwargs,
                 "media_region": media_region,
-            },  # optional, whatever you want
+            },
         )
 
     def _fetch_playlist_data(
         self, mobile_session: AmazonMusicMobileAPI, playlist_id: str, media_region: AmazonRegion
     ) -> dict:
-        """Fetch a catalog playlist (10-char ASIN, e.g. Top 100) or a user playlist."""
         if len(playlist_id) == 10:
             catalog = mobile_session.get_catalog_playlist(playlist_id, region_to_use=media_region)
             return dict(catalog.get("playlist") or catalog)
-        # A user playlist (either from the shared link, or the address bar)
         user_resp = mobile_session.get_user_playlist(playlist_id)
         playlists = user_resp.get("playlists") or []
         if not playlists:
@@ -1863,14 +1758,10 @@ class ModuleInterface:
 
     def get_playlist_info(
         self, playlist_id: str, media_region: AmazonRegion, data={}
-    ) -> (
-        PlaylistInfo
-    ):  # Mandatory if either ModuleModes.download or ModuleModes.playlist
+    ) -> PlaylistInfo:
         mobile_session, _ = self.select_session(media_region)
 
         cached = data.get(playlist_id) if data and playlist_id in data else None
-        # A cached payload counts only if it's a full playlist API response, not a
-        # text-search hit: metadata.title present and first track (if any) expanded.
         cache_usable = False
         if isinstance(cached, dict):
             meta = cached.get("metadata")
@@ -1913,8 +1804,6 @@ class ModuleInterface:
             if not asin:
                 continue
             track_asins.append(asin)
-            # Keep the playlist-level `meta` intact: this is the per-track
-            # metadata that gets passed through as `{asin}_playlist`.
             track_meta = track.get("metadata")
             track_data[f"{asin}_playlist"] = (
                 track_meta if isinstance(track_meta, dict) else track
@@ -1946,13 +1835,6 @@ class ModuleInterface:
     def _batched_album_metadata(
         self, mobile_session: AmazonMusicMobileAPI, asins: list[str], media_region: AmazonRegion
     ) -> list[dict]:
-        """
-        Fetch full album metadata for many ASINs concurrently.
-
-        The muse lookup endpoint accepts up to 10 ASINs per request, so batch
-        metadata fetches (94 single calls -> ~10 batched calls) and run them
-        concurrently. Each entry is the same payload as get_album_info.
-        """
         def _fetch_batch(batch: list[str]) -> list[dict]:
             try:
                 resp = mobile_session.get_metadata(tuple(batch), region_to_use=media_region)
@@ -1974,10 +1856,9 @@ class ModuleInterface:
 
     def get_artist_info(
         self, artist_id: str, get_credited_albums: bool, media_region: AmazonRegion, data: dict = {}
-    ) -> ArtistInfo:  # Mandatory if ModuleModes.download
+    ) -> ArtistInfo:
         mobile_session, _ = self.select_session(media_region)
 
-        # get_credited_albums means stuff like remix compilations the artist was part of
         try:
             artist_data = mobile_session.get_info(artist_id, "artistList", region_to_use=media_region)
         except Exception as e:
@@ -1995,7 +1876,6 @@ class ModuleInterface:
         )
 
         def _search_catalog(query: str, search_types: tuple[str, ...]) -> list:
-            # Fetch a large pool so artist expand can show the full discography.
             return list(
                 mobile_session.search(
                     query=query,
@@ -2005,16 +1885,12 @@ class ModuleInterface:
                 )
             )
 
-        # Candidate albums from the artist catalog search.
         search_albums = [
             album
             for album in _search_catalog(f'"{artist_name}"', ("catalog_album",))
             if artist_name in album.get("artistName", "")
         ]
 
-        # Some regions appear to cap a single textsearch window near 100 albums.
-        # When we detect that plateau, fan out album queries with simple suffixes
-        # and merge newly discovered ASINs.
         seen_album_asins = {
             str(a.get("asin"))
             for a in search_albums
@@ -2056,8 +1932,6 @@ class ModuleInterface:
                 if no_new_streak >= 8:
                     break
 
-        # Textsearch for catalog_album can plateau around 100 in some regions.
-        # Add a secondary source: catalog_track hits -> album ASINs.
         track_album_hits: list[dict] = []
         try:
             track_hits = _search_catalog(f'"{artist_name}"', ("catalog_track",))
@@ -2091,8 +1965,6 @@ class ModuleInterface:
         except Exception as ex:
             LOGGER.debug("Artist track-album harvest failed (%s): %s", artist_id, ex)
 
-        # Some territories/accounts return only ~20 albums from textsearch.
-        # Use artist muse pages as an additional source and merge both sets.
         def _extract_album_docs(obj):
             docs = []
             seen_doc_asins: set[str] = set()
@@ -2137,7 +2009,6 @@ class ModuleInterface:
                     for asin_value in direct_asins:
                         _maybe_add_doc(current, str(asin_value))
 
-                    # Artist pages frequently store album IDs in links/URIs/actions.
                     for value in current.values():
                         if isinstance(value, str):
                             asin_from_link = _extract_asin_from_string(value)
@@ -2155,7 +2026,6 @@ class ModuleInterface:
                             if asin_from_link:
                                 docs.append({"asin": asin_from_link})
 
-            # Deduplicate fallback dict-only rows generated from string-only matches.
             deduped = {}
             for d in docs:
                 asin = str(d.get("asin") or "").upper()
@@ -2187,7 +2057,7 @@ class ModuleInterface:
         next_token = None
         page_count = 200
         offset = 0
-        for _ in range(40):  # hard stop guard
+        for _ in range(40):
             try:
                 artist_page = mobile_session.get_page(
                     f"artist/{artist_id}",
@@ -2210,24 +2080,16 @@ class ModuleInterface:
                 page_albums.append(doc)
                 added += 1
 
-            if getattr(self.options, "debug_mode", False):
-                self.print(
-                    f"{module_information.service_name}: artist page debug -> "
-                    f"added_per_page={added}, offset={offset}, next_token={'yes' if next_token else 'no'}"
-                )
-
             extracted_token = _extract_next_token(artist_page)
             if extracted_token:
                 next_token = extracted_token
                 continue
 
-            # Fallback for regions where artist pages paginate by offset without exposing next tokens.
             next_token = None
             if added == 0:
                 break
             offset += page_count
 
-        # Merge page-scraped albums and track-derived album hits into the search results.
         for extra_albums in (page_albums, track_album_hits):
             if not extra_albums:
                 continue
@@ -2238,15 +2100,6 @@ class ModuleInterface:
                     search_albums.append(album)
                     seen_search_asins.add(asin)
 
-        if getattr(self.options, "debug_mode", False):
-            self.print(
-                f"{module_information.service_name}: artist merge debug -> "
-                f"search_albums={len(search_albums)}, "
-                f"page_albums={len(page_albums)}, "
-                f"track_album_hits={len(track_album_hits)}, merged_candidates={len(search_albums)}"
-            )
-
-        # Map requested ASIN -> search hit so we can pair batched metadata back to it.
         search_by_asin: dict[str, dict] = {}
         for album in search_albums:
             asin = album.get("asin")
@@ -2260,10 +2113,6 @@ class ModuleInterface:
                     return search_by_asin[str(asin)]
             return None
 
-        # The muse lookup endpoint accepts up to 10 ASINs per request, so batch
-        # metadata fetches (94 single calls -> ~10 batched calls) and run them
-        # concurrently. Full album details (tracks, year, quality flags) are
-        # preserved because each entry is the same payload as get_album_info.
         all_asins = list(search_by_asin.keys())
         fetched_metadata = self._batched_album_metadata(mobile_session, all_asins, media_region)
         matched_asins: set[str] = set()
@@ -2272,7 +2121,6 @@ class ModuleInterface:
             if hit is not None and hit.get("asin"):
                 matched_asins.add(str(hit["asin"]))
 
-        # Fallback: fetch any ASINs the batched lookup silently dropped.
         missing_asins = [a for a in all_asins if a not in matched_asins]
         if missing_asins:
             with concurrent.futures.ThreadPoolExecutor(
@@ -2338,12 +2186,9 @@ class ModuleInterface:
                 artist_name_norm and album_artist_norm == artist_name_norm
             )
 
-            # Drop noisy compilation rows unless they are truly primary for this artist.
             if _is_various_artists(album_artist_name) and not primary_artist_match:
                 continue
 
-            # Keep only strong ownership links to avoid false positives for name collisions
-            # (e.g. "The Blessed Madonna", "Luigi Madonna").
             if not primary_artist_match and not contributor_match and not exact_artist_name_match:
                 continue
 
@@ -2368,13 +2213,11 @@ class ModuleInterface:
                     for album_meta in albums_metadata
                 }
             },
-            # tracks=[],
-            # track_extra_kwargs={"data": ""},  # optional, whatever you want
         )
 
     def get_track_credits(
         self, track_id: str, media_region: AmazonRegion, data={}, **kwargs
-    ):  # Mandatory if ModuleModes.credits
+    ):
         mobile_session, _ = self.select_session(media_region)
         track_credits = mobile_session.get_track_xray(track_id, region_to_use=media_region, parse_credits=True)
         return [
@@ -2391,7 +2234,7 @@ class ModuleInterface:
 
     def get_track_cover(
         self, track_id: str, cover_options: CoverOptions, media_region: AmazonRegion, data={}, **kwargs
-    ) -> CoverInfo:  # Mandatory if ModuleModes.covers
+    ) -> CoverInfo:
         mobile_session, _ = self.select_session(media_region)
 
         track_data = self._cached_or_fetch(
@@ -2421,9 +2264,9 @@ class ModuleInterface:
 
     def get_track_lyrics(
         self, track_id: str, media_region: AmazonRegion, data={}, **kwargs
-    ) -> LyricsInfo:  # Mandatory if ModuleModes.lyrics
+    ) -> LyricsInfo:
         mobile_session, _ = self.select_session(media_region)
-        track_lyrics_resp = mobile_session.get_track_lyrics(track_id, region_to_use=media_region) # music_territory="CY"
+        track_lyrics_resp = mobile_session.get_track_lyrics(track_id, region_to_use=media_region)
 
         embedded_lyrics = ""
         synced_lyrics = ""
@@ -2452,12 +2295,10 @@ class ModuleInterface:
                 if start_time is None:
                     embedded_lyrics += f"{text}\n"
                     continue
-                # Convert milliseconds to the proper LRC time format [mm:ss.xxx]
                 start_time_str = f"{start_time // 60000:02}:{(start_time // 1000) % 60:02}.{start_time % 1000:03}"
                 embedded_lyrics += f"[{start_time_str}] {text}\n"
                 synced_lyrics += f"[{start_time_str}]{text}\n"
         else:
-            # Some regions/tracks can return unsynced-only payloads without `lines`.
             plain_text = (
                 lyrics_payload.get("text")
                 or lyrics_payload.get("plainText")
@@ -2469,7 +2310,7 @@ class ModuleInterface:
 
         return LyricsInfo(
             embedded=embedded_lyrics, synced=synced_lyrics
-        )  # both optional if not found
+        )
 
     def _stereo_only_quality_labels(self, labels: typing.Iterable[str]) -> set[str]:
         return {
@@ -2488,13 +2329,6 @@ class ModuleInterface:
         query_type: DownloadTypeEnum,
         max_track_probe: int = SEARCH_QUALITY_MAX_TRACK_PROBE,
     ) -> typing.Optional[list[str]]:
-        """
-        Quality from track MPD manifests (same source as expand/download).
-
-        Search/artist rows sample a few tracks per album for speed; expand still uses all
-        tracks. Sampling the first / middle / last track is enough to detect the album's
-        highest tier. Returns None to fall back to contentEncoding flags when the probe fails.
-        """
         track_asins: list[str] = []
         if query_type == DownloadTypeEnum.album:
             for track in catalog.get("tracks") or []:
@@ -2512,9 +2346,6 @@ class ModuleInterface:
             track_asins = [track_asins[i] for i in indices[:max_track_probe]]
 
         try:
-            # Same manifest + per-track label pass as get_album_info / expand (force_3d
-            # from settings). Optional second pass with force_3d=False when Amazon omits
-            # UHD on the 3D substitution ASIN.
             probe_asins = tuple(track_asins)
             force_3d = self._amazon_force_3d_for_manifest()
             spatial_labels, stereo_labels, per_track_labels, has_ra360_manifest = (
@@ -2562,12 +2393,6 @@ class ModuleInterface:
         media_region: AmazonRegion,
         search_hit: typing.Optional[dict] = None,
     ) -> dict[str, typing.Any]:
-        """Year, track count, and best quality for artist discography rows (matches album search).
-
-        Quality is read from local catalog contentEncoding flags only (no per-album
-        manifest probe), so expanding a large discography stays fast. The exact tier
-        is still refined from the MPD manifest on expand/download.
-        """
         year = ""
         try:
             if album_catalog.get("originalReleaseDate") or album_catalog.get("merchantReleaseDate"):
@@ -2592,8 +2417,6 @@ class ModuleInterface:
             except (TypeError, ValueError):
                 pass
 
-        # Gather catalog quality flags from the full metadata (and its tracks) plus the
-        # original search hit, which reliably carries contentEncoding flags.
         catalog_tags = self._catalog_quality_tags_from_entity_and_tracks(album_catalog)
         if isinstance(search_hit, dict):
             for tag in self._catalog_quality_tags_from_entity_and_tracks(search_hit):
@@ -2623,7 +2446,7 @@ class ModuleInterface:
         query: str,
         track_info: typing.Optional[TrackInfo] = None,
         limit: int = 10,
-    ):  # Mandatory
+    ):
         preferred_region = self._preferred_account_region()
         mobile_session, media_region = self.select_session(preferred_region)
         self.print(f"{module_information.service_name}: Using {media_region.country} for search query ({query})")
@@ -2650,7 +2473,6 @@ class ModuleInterface:
             return None
 
         def _track_album_asin(item: dict) -> typing.Optional[str]:
-            """Best-effort album ASIN for a track search hit (used to backfill year)."""
             sources = [item]
             meta = item.get("metadata")
             if isinstance(meta, dict):
@@ -2668,7 +2490,6 @@ class ModuleInterface:
             return None
 
         def _fetch_catalog_entity_for_search(item: dict) -> typing.Optional[dict]:
-            """Full album/playlist metadata (text search hits omit year, duration, quality)."""
             asin = item.get("asin") or item.get("seriesAsin")
             if not asin or query_type not in (DownloadTypeEnum.album, DownloadTypeEnum.playlist):
                 return None
@@ -2714,7 +2535,6 @@ class ModuleInterface:
                         catalog_tags.append(tag)
 
             def _finalize(labels: list[str]) -> list[str]:
-                """Atmos from catalog flags when the probe missed it, else stereo + catalog UHD/HD."""
                 if not self._quality_labels_include_atmos(labels):
                     atmos = self._catalog_atmos_display_label(catalog) or self._catalog_atmos_display_label(item)
                     if atmos:
@@ -2725,7 +2545,6 @@ class ModuleInterface:
                 DownloadTypeEnum.album,
                 DownloadTypeEnum.playlist,
             ):
-                # Prefer catalog HD/UHD/Atmos flags (no MPD round-trips) when Amazon already sent them.
                 if catalog_tags:
                     catalog_labels = self._amazon_catalog_quality_display_labels(
                         catalog_tags
@@ -2750,8 +2569,6 @@ class ModuleInterface:
                 return self._amazon_catalog_quality_display_labels(catalog_tags)
             return []
 
-        # Filled in below for track searches whose lightweight hits omit a release
-        # date; maps album ASIN -> year via a few batched album-metadata lookups.
         album_year_backfill: dict[str, str] = {}
 
         def _resolve_year(item: dict, catalog: typing.Optional[dict]) -> typing.Optional[str]:
@@ -2798,9 +2615,6 @@ class ModuleInterface:
             )
 
         if query_type == DownloadTypeEnum.track and results:
-            # Track search hits frequently omit a release date. Backfill the year
-            # from the owning album's metadata using batched lookups (up to 10
-            # ASINs per request) instead of one slow call per track.
             needed_album_asins: list[str] = []
             seen_album_asins: set[str] = set()
             for item in results:
@@ -2825,7 +2639,6 @@ class ModuleInterface:
                         album_year_backfill[str(asin_val)] = year
 
         if query_type in (DownloadTypeEnum.album, DownloadTypeEnum.playlist) and len(results) > 1:
-            # Album rows: sequential catalog fetch + optional 3-track MPD sample (session not thread-safe).
             if query_type == DownloadTypeEnum.album:
                 return [_build_search_result(item) for item in results]
             search_output: list[SearchResult] = []
@@ -2838,8 +2651,6 @@ class ModuleInterface:
 
         return [_build_search_result(item) for item in results]
 
-    # helpers
-
     def get_hi_res_cover(
         self,
         asins: typing.Iterable[str],
@@ -2850,7 +2661,6 @@ class ModuleInterface:
     ):
         cover_url = None
 
-        # Typically this works
         if not search_data:
             search_data = mobile_session.search(
                 query=query,
@@ -2868,9 +2678,6 @@ class ModuleInterface:
         )
 
         if not cover_url:
-            # These types of album/tracks are unique as they only appear in Playlists (curated by Amazon Music)
-            # e.g tracks with the label "Amazon Content Service"
-            # We have to trust that Amazon Search API returns the correct playlist that has the album/track inside of it
             for p_search_data in mobile_session.search(
                 query=query,
                 search_types=("catalog_playlist",),
@@ -2918,7 +2725,6 @@ class ModuleInterface:
 
     @classmethod
     def _parse_amazon_year(cls, raw: typing.Any) -> typing.Optional[str]:
-        """Parse Amazon ms/second timestamps, year ints, or date strings to YYYY."""
         if raw is None:
             return None
         if isinstance(raw, str):
@@ -2963,7 +2769,6 @@ class ModuleInterface:
     def _playlist_year_from_track_metadata(
         cls, catalog: dict, max_tracks: int = 25
     ) -> typing.Optional[str]:
-        """User/catalog playlists: lastUpdatedDate or creationDate on track rows."""
         years: list[int] = []
         for track in (catalog.get("tracks") or [])[:max_tracks]:
             if not isinstance(track, dict):
@@ -3011,8 +2816,6 @@ class ModuleInterface:
             / 1000
         )
         if os.name == "nt" and proper_ts < 0:
-            # Windows doesn't fully support any dates
-            # before 1970 (negative dates), so this is a workaround.
             return datetime(1970, 1, 1) - timedelta(seconds=abs(proper_ts))
 
         return datetime.fromtimestamp(proper_ts)
@@ -3022,7 +2825,6 @@ class ModuleInterface:
         sanitized = re.split(r"(\s\[Explicit\]|\s\[Clean\])$", name, maxsplit=1)
         if len(sanitized) >= 2:
             return sanitized[0]
-        # No matches found
         return name
 
     @staticmethod
@@ -3053,7 +2855,6 @@ class ModuleInterface:
         return new_url
 
     def _print_quality_notice_once(self, key: str, message: str) -> None:
-        """Avoid per-track spam when max_track_quality_to_use applies to a whole album."""
         with self._quality_notice_lock:
             if key in self._quality_notice_seen:
                 return
@@ -3066,7 +2867,6 @@ class ModuleInterface:
 
     @staticmethod
     def _spatial_manifest_badge(track: AudioTrack) -> str:
-        """Search/download badge from MPD track type + codec (not catalog 'immersive')."""
         quality = str(track.quality or "").upper()
         if quality.startswith("SPATIAL_RA360") or track.codec in (CodecEnum.MHA1, CodecEnum.MHM1):
             return "3D MPEG-H Audio"
@@ -3183,7 +2983,6 @@ class ModuleInterface:
                     f"{module_information.service_name}: {max_track_quality_to_use} is not on every "
                     "track; using the highest available quality where needed.",
                 )
-            # If user explicitly chose UHD/HD, prefer a lossless fallback before dropping to lossy.
             if not track_to_use and max_track_quality_to_use in ("UHD", "HD"):
                 track_to_use = self._select_audio_track_for_tier(
                     mapped_audio_tracks,
@@ -3214,24 +3013,12 @@ class ModuleInterface:
         media_region: AmazonRegion,
         account_region: AmazonRegion
     ):
-        """
-        A helper function to retrieve a mapping of a QualityEnum
-        to a dictionary of a Quality and a list of AudioTracks via a MPD.
-
-        """
-        # LOGGER.debug(json.dumps(mpd, indent=3))
-
         avaliable_tracks = self.get_audios_from_mpd(mpd, track_asin)
 
-        # Sorting by bitrate helps retrieve the highest resolution avaliable
         LOGGER.debug(avaliable_tracks)
 
         preferred_codecs = [CodecEnum.OPUS]
-        # TS: 1703471476
-        # I fucking wrote the entitlement and KATANA exclusion condition in the wrong place
-        # I'll write it later, but TODO it's supposed to be its own independant function after mapped tracks
 
-        # Know what entitlements are avaliable
         available_entitlements = set(
             i
             for track in avaliable_tracks
@@ -3239,12 +3026,10 @@ class ModuleInterface:
         )
         has_entitlements = bool(
             self.settings["use_own_master_keys"]
-            # Make sure the key required exists
             and any(
                 f"KATANA:{media_region.country}" in str(item)
                 for item in self.settings["master_keys"]
             )
-            # Make sure the entitlement PSSH exists
             and any(
                 local_name in av_entitlement_name
                 for local_name, _ in (
@@ -3260,7 +3045,6 @@ class ModuleInterface:
                 self.options.disable_subscription_check
                 or subscription_tier is AmazonMusicTier.UNLIMITED
             )
-            # Needed as license acquitsion, might be blocked due to cross region calling
             and account_region.region == media_region.region
         )
 
@@ -3307,13 +3091,6 @@ class ModuleInterface:
         return key_id, final_key
 
     def get_audios_from_mpd(self, manifest: ElementTree.Element, track_asin: str):
-        """
-        Retrieve each avaliable audio quality/format as a AudioTrack.
-
-        The manifest must be retrieved from manifest API endpoint with the SIREN / SIREN_KATANA DASH version.
-
-        The manifest must follow the `urn:mpeg:dash:profile:isoff-on-demand:2011` XML profile.
-        """
         avaliable_tracks: list[AudioTrack] = []
         ns = {
             "mpd": "urn:mpeg:dash:schema:mpd:2011",
@@ -3351,13 +3128,11 @@ class ModuleInterface:
             audio_ref_loudness = ""
 
             for prop in adaptation_set.findall("SupplementalProperty"):
-                # Get track type property (LD, SD, HD, SD)
                 if prop.get("schemeIdUri") == "amz-music:trackType":
                     official_quality_name = prop.get("value", "Unknown")
                     LOGGER.debug(f"Official name for track: {official_quality_name}")
                     continue
 
-                # Get track loudness property
                 if prop.get("schemeIdUri") == "urn:mpeg:mpegB:cicp:ProgramLoudness":
                     audio_ref_loudness = prop.get("value", "Unknown")
                     continue
@@ -3374,24 +3149,19 @@ class ModuleInterface:
                 if quality.startswith(
                     "UHD"
                 ) and not official_quality_name.startswith("UHD"):
-                    # amz-music:trackType only returns the following:
-                    # LD, SD, HD, and 3D
                     official_quality_name = "UHD"
                 elif not official_quality_name:
                     official_quality_name = quality
 
                 codec = str(representation.get("codecs")).upper()
-                # 360 Audio
                 if codec.startswith("MHA1"):
                     codec = "MHA1"
                 elif codec.startswith("MHM1"):
                     codec = "MHM1"
-                # Dolby Atmos
                 elif codec.startswith("EC-3"):
                     codec = "EAC3"
                 elif codec.startswith("AC-4"):
                     codec = "AC4"
-                # V2 musicDashVersionList
                 elif codec.startswith("MP4A"):
                     codec = "AAC"
 
@@ -3448,21 +3218,6 @@ class ModuleInterface:
         entitlements_only: typing.Optional[bool] = None,
         allow_web_pssh: typing.Optional[bool] = None,
     ) -> dict[QualityEnum, dict[str, list[AudioTrack]]]:
-        """
-        Example output:
-
-        {
-            "hifi": {
-                "SPATIAL_ATMOS_HIGH": [
-                    AudioTrack(),
-                ],
-                "SPATIAL_ATMOS_MEDIUM": [
-                    AudioTrack()
-                ]
-            },
-        }
-
-        """
         quality_to_track_mapping = {}
 
         def key_for_filtering_audiotracks(track: AudioTrack):
@@ -3480,7 +3235,6 @@ class ModuleInterface:
             return
 
         for quality_enum, qualities in reversed(self.quality_parse.items()):
-            # AudioTracks are sorted best quality to worst
             grouped_tracks = OrderedDict([
                 (key, natsort.natsorted(
                     group, key=lambda track: track.bitrate, reverse=True
@@ -3497,7 +3251,6 @@ class ModuleInterface:
 
     @staticmethod
     def _run_decryption_tool(args: list[str], env, cwd: str, out_path: str) -> subprocess.CompletedProcess:
-        """Run a decryption tool with console-window suppression, clearing any previous output."""
         if os.path.isfile(out_path):
             try:
                 os.remove(out_path)
@@ -3516,7 +3269,6 @@ class ModuleInterface:
 
     @staticmethod
     def _try_mp4decrypt(encrypted_file: str, destination_file: str, key_id: str, key: str) -> bool:
-        """Fallback decrypt via Bento4 mp4decrypt when Shaka Packager crashes (e.g. Tiny10 VM)."""
         executable = resolve_mp4decrypt()
         if not executable:
             return False
@@ -3527,7 +3279,6 @@ class ModuleInterface:
         env["PATH"] = str(executable.parent) + os.pathsep + env.get("PATH", "")
         cwd = os.path.dirname(enc_path) or os.getcwd()
 
-        # KID:key (CENC), then track index fallbacks per Bento4 docs.
         key_specs = (
             f"{key_id}:{key}",
             f"1:{key}",
@@ -3578,7 +3329,6 @@ class ModuleInterface:
 
         drm_label = (label or "0").strip()
         keys_arg = f"--keys=label={drm_label}:key_id={key_id}:key={key}"
-        # stream=0 matches the original module (works with v3.7.2 on dev); stream=audio is a fallback.
         stream_variants = [
             f"input={enc_path},stream=0,output={out_path}",
             f"input={enc_path},stream=audio,output={out_path},drm_label={drm_label}",
@@ -3628,8 +3378,6 @@ class ModuleInterface:
             return
 
         detail_lower = (last_detail or "").lower()
-        # macOS: a too-new Shaka Packager build links libc++ symbols missing on older
-        # macOS, so it SIGABRTs (exit -6) with a dyld "Symbol not found" message.
         macos_abi_crash = sys.platform == "darwin" and (
             last_returncode == -6
             or "symbol not found" in detail_lower
@@ -3678,4 +3426,4 @@ class ModuleInterface:
             last_returncode,
             [str(executable), *packager_args],
             last_detail.strip(),
-        )
+    )
