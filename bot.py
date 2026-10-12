@@ -7,6 +7,14 @@ from fastapi import FastAPI
 import uvicorn
 import threading
 
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# Después de esas líneas continúas con tus imports habituales:
+from interface import ModuleInterface, validate_amazonmusic_setup
+
 # Importar el motor de OrpheusDL
 from interface import ModuleInterface, validate_amazonmusic_setup
 
