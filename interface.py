@@ -40,6 +40,17 @@ from utils.utils import (
 from modules.amazonmusic.models import AmazonContinent
 from azapi import AmazonMusicMobileAPI, AmazonMusicMobileAPICredentials, AmazonMusicTier, AmazonRegion
 
+from enum import Enum, IntEnum
+
+class CodecEnum(str, Enum):
+    OPUS = "OPUS"
+    AAC = "AAC"
+    FLAC = "FLAC"
+    MHA1 = "MHA1"
+    MHM1 = "MHM1"
+    EAC3 = "EAC3"
+    AC4 = "AC4"
+
 class QualityEnum(IntEnum):
     MINIMUM = 1
     LOW = 2
