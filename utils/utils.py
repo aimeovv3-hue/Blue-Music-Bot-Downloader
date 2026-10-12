@@ -1,6 +1,7 @@
 import re
 import os
 import uuid
+import requests
 
 def clean_filename(filename: str) -> str:
     """Limpia caracteres inválidos para nombres de archivos."""
@@ -30,9 +31,20 @@ def get_readable_time(seconds: int) -> str:
 
 def ensure_dir(directory: str):
     """Se asegura de que el directorio exista, si no, lo crea."""
-    if not os.path.exists(directory):
-        os.makedirs(directory)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory, exist_ok=True)
 
 def create_temp_filename(suffix: str = "") -> str:
     """Genera un nombre de archivo temporal único."""
     return f"{uuid.uuid4()}{suffix}"
+
+def download_file(url: str, dest_path: str) -> str:
+    """Descarga un archivo desde una URL a una ruta de destino."""
+    if os.path.dirname(dest_path):
+        ensure_dir(os.path.dirname(dest_path))
+    with requests.get(url, stream=True) as r:
+        r.raise_for_status()
+        with open(dest_path, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+    return dest_path
